@@ -1,13 +1,14 @@
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import contextlib
 import unittest
 import unittest.mock as mock
+from importlib.metadata import EntryPoint
 from types import ModuleType
 
-import pkg_resources
 from opsdroid.core import OpsDroid
 from opsdroid.cli.start import configure_lang
 from opsdroid.configuration import load_config_file
@@ -235,25 +236,34 @@ class TestLoader(unittest.TestCase):
         self.assertIsInstance(module, ModuleType)
 
     def test_import_module_from_entrypoint(self):
+        ep = EntryPoint("myep", "os.path", "opsdroid_databases")
+        _, loader = self.setup()
+        loader.modules_directory = self._tmp_dir
 
-        config = {}
-        config["module_path"] = ""
-        config["name"] = "myep"
-        config["type"] = ""
-        config["module"] = ""
+        with mock.patch(
+            "opsdroid.loader.entry_points", return_value=(ep,)
+        ) as discover:
+            loaded = loader._load_modules("database", {"myep": {}})
 
-        distro = pkg_resources.Distribution()
-        ep = pkg_resources.EntryPoint("myep", "os.path", dist=distro)
-        config["entrypoint"] = ep
+        discover.assert_called_once_with(group="opsdroid_databases")
+        self.assertEqual(len(loaded), 1)
+        self.assertEqual(loaded[0]["config"]["name"], "myep")
+        self.assertIs(loaded[0]["module"], os.path)
 
-        opsdroid, loader = self.setup()
-        loader.modules_directory = "."
-        modules = {"myep": {}}
-
-        with mock.patch("opsdroid.loader.iter_entry_points") as mock_iter_entry_points:
-            mock_iter_entry_points.return_value = (ep,)
-            loaded = loader._load_modules("database", modules)
-            self.assertEqual(loaded[0]["config"]["name"], "myep")
+    def test_loader_import_without_pkg_resources(self):
+        code = (
+            "import sys\n"
+            "sys.modules['pkg_resources'] = None\n"
+            "import opsdroid.loader\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", code],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_import_broken_module(self):
         skill_path = "opsdroid/testing/mockmodules/skills/broken_skill.py"
